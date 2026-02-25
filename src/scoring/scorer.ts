@@ -1,0 +1,67 @@
+import type { Preferences, JobDetails, ScoreResult } from "../types.js";
+import { htmlToText } from "../utils/html-to-text.js";
+
+/**
+ * Score a job against user preferences.
+ * Pure string matching and arithmetic — zero LLM calls.
+ *
+ * Scoring rules:
+ * 1. Title keyword matches — sum matched weights
+ * 2. Description keyword matches — sum matched weights
+ * 3. Exclusion penalty — if any exclusion term in title → score = -1
+ * 4. Location bonus — if job location matches a preferred location → +2
+ * 5. Salary check — if salary is parseable and below salary_min → score = -1
+ */
+export function scoreJob(job: JobDetails, prefs: Preferences): ScoreResult {
+  const breakdown: Record<string, number> = {};
+  const titleLower = job.title.toLowerCase();
+  const descText = job.description_html ? htmlToText(job.description_html).toLowerCase() : "";
+
+  // 3. Exclusion check (early exit)
+  for (const exclusion of prefs.exclusions) {
+    if (titleLower.includes(exclusion.toLowerCase())) {
+      breakdown[`exclusion:${exclusion}`] = -1;
+      return { score: -1, breakdown };
+    }
+  }
+
+  // 5. Salary check (early exit)
+  if (prefs.salary_min > 0 && job.salary_max !== null && job.salary_max > 0) {
+    if (job.salary_max < prefs.salary_min) {
+      breakdown["salary_below_min"] = -1;
+      return { score: -1, breakdown };
+    }
+  }
+
+  let score = 0;
+
+  // 1. Title keyword matches
+  for (const kw of prefs.title_keywords) {
+    if (titleLower.includes(kw.term.toLowerCase())) {
+      breakdown[`title:${kw.term}`] = kw.weight;
+      score += kw.weight;
+    }
+  }
+
+  // 2. Description keyword matches
+  for (const kw of prefs.description_keywords) {
+    if (descText.includes(kw.term.toLowerCase())) {
+      breakdown[`desc:${kw.term}`] = kw.weight;
+      score += kw.weight;
+    }
+  }
+
+  // 4. Location bonus
+  if (job.location && prefs.locations.length > 0) {
+    const locLower = job.location.toLowerCase();
+    for (const prefLoc of prefs.locations) {
+      if (locLower.includes(prefLoc.toLowerCase())) {
+        breakdown[`location:${prefLoc}`] = 2;
+        score += 2;
+        break; // Only one location bonus
+      }
+    }
+  }
+
+  return { score, breakdown };
+}

@@ -1,0 +1,5 @@
+node_modules/
+build/
+data/
+preferences.json
+*.db
