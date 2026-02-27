@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SEED_LIST } from "../registry/seed.js";
-import { getSource } from "../sources/registry.js";
+import { getSource, PLATFORM_PRIORITY } from "../sources/registry.js";
 import { upsertCompany } from "../db/cache.js";
 import { persistDb } from "../db/schema.js";
 import type { CompanyMetadata } from "../types.js";
@@ -109,7 +109,11 @@ export function registerRunSetup(server: McpServer) {
 
       // Build summary for the LLM
       const companySummaries = discovered
-        .sort((a, b) => b.open_role_count - a.open_role_count)
+        .sort((a, b) => {
+          const pa = PLATFORM_PRIORITY[a.ats_platform] ?? 99;
+          const pb = PLATFORM_PRIORITY[b.ats_platform] ?? 99;
+          return pa !== pb ? pa - pb : b.open_role_count - a.open_role_count;
+        })
         .map((c) => {
           const depts = c.departments.length > 0 ? c.departments.slice(0, 5).join(", ") : "N/A";
           const locs = c.locations.length > 0 ? c.locations.slice(0, 5).join(", ") : "N/A";

@@ -17,7 +17,16 @@ interface GreenhouseJob {
 interface GreenhouseBoard {
   name: string;
   content: string;
-  departments: { id: number; name: string; jobs: { id: number }[] }[];
+}
+
+interface GreenhouseDepartment {
+  id: number;
+  name: string;
+  jobs: { id: number }[];
+}
+
+interface GreenhouseDepartmentsResponse {
+  departments: GreenhouseDepartment[];
 }
 
 export const greenhouse: JobSource = {
@@ -25,9 +34,10 @@ export const greenhouse: JobSource = {
 
   async fetchBoardInfo(slug: string): Promise<Result<BoardInfo>> {
     try {
-      // Fetch board metadata and jobs list in parallel
-      const [boardRes, jobsRes] = await Promise.all([
+      // Fetch board metadata, departments, and jobs list in parallel
+      const [boardRes, deptsRes, jobsRes] = await Promise.all([
         fetch(`${BASE_URL}/${slug}`),
+        fetch(`${BASE_URL}/${slug}/departments`),
         fetch(`${BASE_URL}/${slug}/jobs?content=true`),
       ]);
 
@@ -36,9 +46,12 @@ export const greenhouse: JobSource = {
       }
 
       const board = (await boardRes.json()) as GreenhouseBoard;
+      const deptsData = deptsRes.ok
+        ? (await deptsRes.json()) as GreenhouseDepartmentsResponse
+        : { departments: [] };
       const jobsData = jobsRes.ok ? (await jobsRes.json()) as { jobs: GreenhouseJob[] } : { jobs: [] };
 
-      const departments = board.departments
+      const departments = (deptsData.departments || [])
         .map((d) => d.name)
         .filter((n) => n && n !== "No Department");
 

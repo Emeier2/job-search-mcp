@@ -1,5 +1,6 @@
 import type { Preferences, JobDetails, ScoreResult } from "../types.js";
 import { htmlToText } from "../utils/html-to-text.js";
+import { PLATFORM_BONUS } from "../sources/registry.js";
 
 /**
  * Score a job against user preferences.
@@ -12,7 +13,7 @@ import { htmlToText } from "../utils/html-to-text.js";
  * 4. Location bonus — if job location matches a preferred location → +2
  * 5. Salary check — if salary is parseable and below salary_min → score = -1
  */
-export function scoreJob(job: JobDetails, prefs: Preferences): ScoreResult {
+export function scoreJob(job: JobDetails, prefs: Preferences, platform?: string): ScoreResult {
   const breakdown: Record<string, number> = {};
   const titleLower = job.title.toLowerCase();
   const descText = job.description_html ? htmlToText(job.description_html).toLowerCase() : "";
@@ -60,6 +61,15 @@ export function scoreJob(job: JobDetails, prefs: Preferences): ScoreResult {
         score += 2;
         break; // Only one location bonus
       }
+    }
+  }
+
+  // 6. Platform bonus
+  if (platform) {
+    const bonus = PLATFORM_BONUS[platform.toLowerCase()] ?? 0;
+    if (bonus > 0) {
+      breakdown[`platform:${platform.toLowerCase()}`] = bonus;
+      score += bonus;
     }
   }
 

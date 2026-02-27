@@ -58,7 +58,7 @@ async function poll() {
     // Score and upsert each job
     let companyMatches = 0;
     for (const job of jobs) {
-      const { score, breakdown } = scoreJob(job, prefs);
+      const { score, breakdown } = scoreJob(job, prefs, company.ats);
       await upsertJob(source.name, companyId, job, score, breakdown);
       if (score >= prefs.score_threshold) {
         companyMatches++;

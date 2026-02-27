@@ -184,7 +184,7 @@ export async function getTopMatches(opts: {
   }
 
   const limit = opts.limit || 25;
-  const sql = `SELECT * FROM jobs WHERE ${conditions.join(" AND ")} ORDER BY score DESC LIMIT ?`;
+  const sql = `SELECT * FROM jobs WHERE ${conditions.join(" AND ")} ORDER BY score DESC, CASE source WHEN 'greenhouse' THEN 0 WHEN 'lever' THEN 1 WHEN 'ashby' THEN 2 ELSE 3 END ASC LIMIT ?`;
   params.push(limit);
 
   const results: JobListing[] = [];
@@ -202,7 +202,7 @@ export async function getCompanyJobs(companyId: string): Promise<JobListing[]> {
   const db = await getDb();
   const results: JobListing[] = [];
   const stmt = db.prepare(
-    "SELECT * FROM jobs WHERE company_id = ? AND is_live = 1 ORDER BY score DESC"
+    "SELECT * FROM jobs WHERE company_id = ? AND is_live = 1 ORDER BY score DESC, CASE source WHEN 'greenhouse' THEN 0 WHEN 'lever' THEN 1 WHEN 'ashby' THEN 2 ELSE 3 END ASC"
   );
   stmt.bind([companyId]);
 
@@ -230,7 +230,7 @@ export async function getJobsByDepartment(companyId: string, department: string)
   const db = await getDb();
   const results: JobListing[] = [];
   const stmt = db.prepare(
-    "SELECT * FROM jobs WHERE company_id = ? AND department = ? AND is_live = 1 ORDER BY score DESC"
+    "SELECT * FROM jobs WHERE company_id = ? AND department = ? AND is_live = 1 ORDER BY score DESC, CASE source WHEN 'greenhouse' THEN 0 WHEN 'lever' THEN 1 WHEN 'ashby' THEN 2 ELSE 3 END ASC"
   );
   stmt.bind([companyId, department]);
 

@@ -28,3 +28,11 @@ export function getAllSources(): JobSource[] {
  * All platform names.
  */
 export const PLATFORMS = ["greenhouse", "lever", "ashby"] as const;
+
+export const PLATFORM_PRIORITY: Record<string, number> = {
+  greenhouse: 0, lever: 1, ashby: 2,
+};
+
+export const PLATFORM_BONUS: Record<string, number> = {
+  greenhouse: 3, lever: 1, ashby: 0,
+};
