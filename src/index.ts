@@ -10,6 +10,8 @@ import { registerGetJobDetails } from "./tools/get-job-details.js";
 import { registerGetResumeContext } from "./tools/get-resume-context.js";
 import { registerSearchJobs } from "./tools/search-jobs.js";
 import { registerCheckJobStatus } from "./tools/check-job-status.js";
+import { registerGetColInfo } from "./tools/get-col-info.js";
+import { registerGenerateResumes } from "./tools/generate-resumes.js";
 
 const server = new McpServer({
   name: "job-search-mcp",
@@ -30,6 +32,8 @@ async function main() {
   registerGetResumeContext(server);
   registerSearchJobs(server);
   registerCheckJobStatus(server);
+  registerGetColInfo(server);
+  registerGenerateResumes(server);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

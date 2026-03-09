@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getTopMatches } from "../db/cache.js";
 import { getCompany } from "../db/cache.js";
 import { loadPreferences } from "../utils/preferences.js";
+import { getColAnnotation, lookupCol } from "../data/col-lookup.js";
 
 export function registerGetMatches(server: McpServer) {
   server.registerTool(
@@ -86,23 +87,18 @@ export function registerGetMatches(server: McpServer) {
         output += `## ${dept}\n\n`;
         for (const job of deptJobs) {
           const companyName = companyNames.get(job.company_id) || job.company_id;
-          const salary =
-            job.salary_min && job.salary_max
-              ? ` | $${job.salary_min.toLocaleString()}-$${job.salary_max.toLocaleString()}`
-              : "";
-          const loc = job.location ? ` | ${job.location}` : "";
-          const tags = job.tags.length > 0 ? ` | ${job.tags.join(", ")}` : "";
-          const breakdown = job.score_breakdown
-            ? Object.entries(job.score_breakdown)
-                .map(([k, v]) => `${k}:${v}`)
-                .join(", ")
-            : "";
+          const salary = job.salary_min && job.salary_max
+            ? `$${job.salary_min.toLocaleString()}-$${job.salary_max.toLocaleString()}`
+            : "Salary not listed";
+          
+          const colInfo = lookupCol(job.location);
+          let colDisplay = colInfo.isRemote ? "Remote" : (colInfo.found ? `RPP ${colInfo.rpp}` : (job.location || "Unknown"));
 
-          output += `- **${job.title}** @ ${companyName} — score: ${job.score}${loc}${salary}${tags}\n`;
-          if (breakdown) output += `  _Matched: ${breakdown}_\n`;
-          output += `  ID: \`${job.source}\` / \`${job.company_id}\` / \`${job.external_id}\`\n`;
-          if (job.application_url) output += `  Apply: ${job.application_url}\n`;
-          output += "\n";
+          output += `- **${job.title}** @ ${companyName}\n`;
+          output += `  URL: ${job.application_url || "N/A"}\n`;
+          output += `  Salary: ${salary}\n`;
+          output += `  COL: ${colDisplay}\n`;
+          output += `  _Score: ${job.score}_\n\n`;
         }
       }
 

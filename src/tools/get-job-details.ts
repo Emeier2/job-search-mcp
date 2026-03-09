@@ -1,13 +1,15 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getJob, getCompany } from "../db/cache.js";
+import { formatColContext } from "../data/col-lookup.js";
+import { loadPreferences } from "../utils/preferences.js";
 
 export function registerGetJobDetails(server: McpServer) {
   server.registerTool(
     "get_job_details",
     {
       description:
-        "Returns the full job description for a single posting from SQLite. Includes title, company, department, location, salary, full description text, tags, score breakdown, and application URL.",
+        "Returns the full job description for a single posting from SQLite. Includes title, company, department, location, salary, cost-of-living context, full description text, tags, score breakdown, and application URL.",
       inputSchema: {
         source: z.string().describe("ATS platform (e.g., 'greenhouse', 'lever', 'ashby')"),
         company: z.string().describe("Company slug (e.g., 'anthropic')"),
@@ -47,6 +49,10 @@ export function registerGetJobDetails(server: McpServer) {
             .join("\n")
         : "No breakdown available";
 
+      const prefs = loadPreferences();
+      const userFloor = prefs?.salary_min ?? 0;
+      const colContext = formatColContext(job.location, job.salary_min, job.salary_max, userFloor);
+
       const text = `# ${job.title}
 
 **Company:** ${companyName}
@@ -57,6 +63,9 @@ export function registerGetJobDetails(server: McpServer) {
 **Last Scraped:** ${job.date_scraped}
 **Score:** ${job.score}
 **Tags:** ${job.tags.length > 0 ? job.tags.join(", ") : "None"}
+
+## Cost of Living
+${colContext}
 
 ## Apply
 ${job.application_url || "No URL available"}

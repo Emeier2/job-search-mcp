@@ -10,12 +10,15 @@ The LLM's role is limited to two things: (1) a one-time interview to define your
 preferences.json ─► poller (cron) ─► ATS APIs ─► scorer ─► SQLite
                                                               │
                                           MCP client ◄── query tools
+                                                              │
+                                        Google Drive ◄── resume tools
 ```
 
 1. **Setup** — `run_setup` probes ~150 company slugs across Greenhouse, Lever, and Ashby to discover active job boards.
 2. **Interview** — The LLM interviews you about role preferences, then calls `save_preferences` to write `preferences.json`.
 3. **Poll** — A background poller (`node build/poll.js`) fetches all jobs from tracked companies and scores them deterministically.
 4. **Query** — MCP tools read pre-scored results from SQLite. Zero API calls at query time.
+5. **Organize** — `generate_resumes` copies your base resume into company-specific folders on Google Drive for top matches.
 
 ### Design principles
 
@@ -31,7 +34,7 @@ Pure string matching — no LLM calls in the scoring loop.
 | Rule | Logic |
 |---|---|
 | Exclusion check | If any exclusion term appears in job title → disqualified (score = -1) |
-| Salary floor (COL-adjusted) | `salary_min × COL_multiplier` per location. SF/NYC = 1.0, Seattle/LA/Boston = 0.95, Austin/Denver/Chicago = 0.88, SLC/Utah = 0.85, Remote = 0.9, Unknown = 0.85 |
+| Salary floor (COL-adjusted) | `salary_min × COL_multiplier`. Multiplier = `Local_RPP / 122.3 (NYC)`. |
 | Title keywords | Substring match against job title, each hit adds its configured weight |
 | Description keywords | Substring match against plain-text job description, each hit adds its weight |
 | Location bonus | +2 if job location matches a preferred location |
@@ -39,40 +42,55 @@ Pure string matching — no LLM calls in the scoring loop.
 
 Jobs below `score_threshold` (default: 5) are stored but not surfaced by `get_matches`.
 
-### COL-adjusted salary floor
+### Cost-of-Living (COL) Adjustment
 
-The salary check dynamically adjusts the minimum acceptable salary based on job location. A `salary_min` of $160,000 in preferences translates to:
+The salary check dynamically adjusts your minimum acceptable salary based on job location using **BEA Regional Price Parity (RPP)** data for ~120 U.S. metros.
 
-| Location | Multiplier | Effective floor |
-|---|---|---|
-| San Francisco, NYC | 1.00 | $160,000 |
-| Seattle, LA, Boston, DC | 0.95 | $152,000 |
-| Austin, Denver, Portland, Chicago | 0.88 | $140,800 |
-| Salt Lake City, Utah | 0.85 | $136,000 |
-| Remote | 0.90 | $144,000 |
-| Unknown / other | 0.85 | $136,000 |
+A `salary_min` of $160,000 in your preferences translates to:
 
-This prevents good roles in lower-COL areas from being rejected by a salary floor calibrated to SF.
+| Location | RPP | Multiplier | Effective floor |
+|---|---|---|---|
+| New York City | 122.3 | 1.000 | $160,000 |
+| San Francisco | 118.5 | 0.969 | $155,040 |
+| Seattle | 112.9 | 0.923 | $147,680 |
+| Austin | 103.8 | 0.849 | $135,840 |
+| Salt Lake City | 101.2 | 0.827 | $132,320 |
+| Remote | N/A | 0.900 | $144,000 |
+| Unknown / other | N/A | 0.850 | $136,000 |
+
+This ensures roles in lower-cost areas aren't filtered out by a floor calibrated to high-COL hubs.
 
 ## MCP tools
 
-### Setup
+### Setup & Config
 | Tool | Description |
 |---|---|
 | `run_setup` | Probe seed list + optional extras to discover companies with active boards |
 | `get_company_info` | Company metadata: name, description, departments, locations, open role count |
-| `save_preferences` | Write structured preference profile (title/description keywords, exclusions, locations, salary, companies) |
-| `setup_polling` | Returns OS-specific instructions for scheduling the poller via cron/Task Scheduler |
+| `save_preferences` | Write structured preference profile (keywords, exclusions, locations, salary) |
+| `setup_polling` | Returns OS-specific instructions for scheduling the poller |
+| `get_col_info` | Lookup, compare, or calculate salary equivalencies for 120+ U.S. metros |
 
-### Query
+### Query & Action
 | Tool | Description |
 |---|---|
 | `get_matches` | Top-scoring jobs above threshold. Filters: company, location, days, limit |
 | `list_company_jobs` | All open positions at one company, sorted by score |
-| `get_job_details` | Full job description, salary, score breakdown, apply link |
+| `get_job_details` | Full job description, salary, score breakdown, and **COL purchasing power context** |
 | `get_resume_context` | Job + company context bundle for resume customization |
 | `search_jobs` | Full-text keyword search across all cached jobs |
 | `check_job_status` | HTTP HEAD to verify a posting URL is still live |
+| `generate_resumes` | Copies base resume into company folders on GDrive for top matches |
+
+## Google Drive Integration
+
+The `generate_resumes` tool automates the first step of the application pipeline. It:
+1. Identifies top-scoring job matches.
+2. Connects to Google Drive (via `@piotr-agier/google-drive-mcp`).
+3. Creates a company-specific folder if one doesn't exist.
+4. Copies your "base resume" (specified by ID) into that folder, renamed for the specific role.
+
+This prepares a workspace for you to perform final role-specific resume tweaks.
 
 ## ATS sources
 
@@ -87,8 +105,11 @@ This prevents good roles in lower-COL areas from being rejected by a salary floo
 ```
 src/
 ├── index.ts              # MCP server entry point (stdio transport)
-├── poll.ts               # Background poller (standalone, run by OS scheduler)
+├── poll.ts               # Background poller (standalone)
 ├── types.ts              # TypeScript interfaces
+├── data/
+│   ├── rpp-data.ts       # BEA Regional Price Parity raw data
+│   └── col-lookup.ts     # Multiplier and equivalency logic
 ├── scoring/
 │   └── scorer.ts         # Deterministic scoring engine with COL adjustment
 ├── sources/
@@ -97,7 +118,7 @@ src/
 │   ├── lever.ts          # Lever adapter
 │   └── ashby.ts          # Ashby adapter
 ├── db/
-│   ├── schema.ts         # SQLite schema (sql.js, in-memory + file persist)
+│   ├── schema.ts         # SQLite schema (sql.js)
 │   ├── cache.ts          # Upsert, query, mark-dead operations
 │   └── search.ts         # LIKE-based full-text search
 ├── tools/                # One file per MCP tool registration
@@ -110,11 +131,14 @@ src/
 │   ├── get-resume-context.ts
 │   ├── search-jobs.ts
 │   ├── check-job-status.ts
-│   └── get-company-info.ts
+│   ├── get-company-info.ts
+│   ├── get-col-info.ts      # New: COL lookup and salary comparison
+│   └── generate-resumes.ts  # New: Google Drive resume automation
 └── utils/
     ├── preferences.ts    # Load/save preferences.json
-    ├── salary-parser.ts  # Regex salary extraction from descriptions
-    └── html-to-text.ts   # HTML → plain text for scoring
+    ├── salary-parser.ts  # Regex salary extraction
+    ├── html-to-text.ts   # HTML → plain text
+    └── gdrive.ts         # GDrive MCP bridge utility
 ```
 
 ## Quick start
@@ -144,18 +168,12 @@ npm run poll
 }
 ```
 
-### Setup flow
-
-In Claude Code, ask: *"Set me up for job searching"*
-
-This triggers `run_setup` → company discovery → preference interview → `save_preferences` → `setup_polling`.
-
 ## Tech stack
 
 - TypeScript + Node.js
-- [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk) for MCP server
-- [sql.js](https://github.com/sql-js/sql.js) (SQLite in WASM, no native deps)
-- [Zod](https://github.com/colinhacks/zod) for input validation
+- [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk)
+- [sql.js](https://github.com/sql-js/sql.js) (SQLite in WASM)
+- [Zod](https://github.com/colinhacks/zod)
 
 ## License
 
