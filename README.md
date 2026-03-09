@@ -1,82 +1,161 @@
 # job-search-mcp
 
-MCP server that bulk-polls job boards, scores jobs against your personal preferences, and surfaces matches — all with minimal LLM credit usage.
+MCP server that bulk-polls ATS job boards, scores jobs against your preferences, and surfaces matches. Designed for use with Claude Code or any MCP-compatible client.
 
 The LLM's role is limited to two things: (1) a one-time interview to define your preferences, and (2) presenting pre-filtered results. Everything else — fetching, storing, scoring, filtering — runs locally.
 
-## How It Works
+## How it works
 
 ```
-Discovery (no LLM)     →  Probe ~150 companies across Greenhouse, Lever, Ashby
-Interview (LLM)         →  Define roles, skills, locations, salary, exclusions
-Background Polling      →  OS scheduler fetches & scores jobs on a cron
-Query (minimal LLM)     →  Pre-scored results from SQLite, LLM just summarizes
+preferences.json ─► poller (cron) ─► ATS APIs ─► scorer ─► SQLite
+                                                              │
+                                          MCP client ◄── query tools
 ```
 
-### Design Principles
+1. **Setup** — `run_setup` probes ~150 company slugs across Greenhouse, Lever, and Ashby to discover active job boards.
+2. **Interview** — The LLM interviews you about role preferences, then calls `save_preferences` to write `preferences.json`.
+3. **Poll** — A background poller (`node build/poll.js`) fetches all jobs from tracked companies and scores them deterministically.
+4. **Query** — MCP tools read pre-scored results from SQLite. Zero API calls at query time.
+
+### Design principles
 
 - **LLM credits are expensive** — used only for the preference interview and result presentation
 - **Local compute is free** — keyword scoring, search, and filtering all happen in SQLite and Node.js
 - **Network is cheap** — bulk-fetch thousands of jobs from public ATS APIs on a schedule
 - **User controls everything** — company list, keyword weights, scoring thresholds all come from the interview
 
-## MCP Tools
+## Scoring engine
 
-| Tool | Phase | Purpose |
-|------|-------|---------|
-| `run_setup` | Setup | Discover companies across Greenhouse/Lever/Ashby, return interview guide |
-| `get_company_info` | Setup | Drill into a specific company's metadata |
-| `save_preferences` | Setup | Write preference profile to disk |
-| `setup_polling` | Setup | Detect OS, generate scheduler setup instructions |
-| `get_matches` | Query | Top-scoring jobs above threshold |
-| `list_company_jobs` | Query | All open positions at one company |
-| `get_job_details` | Query | Full description for a single posting |
-| `get_resume_context` | Query | Full job + company data package for resume customization |
-| `search_jobs` | Query | Keyword search across all cached jobs |
-| `check_job_status` | Query | Verify if a posting URL is still live |
+Pure string matching — no LLM calls in the scoring loop.
 
-## Scoring Engine
+| Rule | Logic |
+|---|---|
+| Exclusion check | If any exclusion term appears in job title → disqualified (score = -1) |
+| Salary floor (COL-adjusted) | `salary_min × COL_multiplier` per location. SF/NYC = 1.0, Seattle/LA/Boston = 0.95, Austin/Denver/Chicago = 0.88, SLC/Utah = 0.85, Remote = 0.9, Unknown = 0.85 |
+| Title keywords | Substring match against job title, each hit adds its configured weight |
+| Description keywords | Substring match against plain-text job description, each hit adds its weight |
+| Location bonus | +2 if job location matches a preferred location |
+| Platform bonus | Greenhouse +3, Lever +1, Ashby +0 |
 
-All scoring is pure string matching and arithmetic — zero LLM calls:
+Jobs below `score_threshold` (default: 5) are stored but not surfaced by `get_matches`.
 
-1. **Title keyword matches** — weighted terms matched against job title
-2. **Description keyword matches** — weighted terms matched against job description
-3. **Exclusion penalty** — disqualifies jobs with excluded terms in title (score = -1)
-4. **Location bonus** — +2 for matching preferred locations
-5. **Salary floor** — disqualifies jobs below minimum salary (score = -1)
+### COL-adjusted salary floor
 
-## Quick Start
+The salary check dynamically adjusts the minimum acceptable salary based on job location. A `salary_min` of $160,000 in preferences translates to:
+
+| Location | Multiplier | Effective floor |
+|---|---|---|
+| San Francisco, NYC | 1.00 | $160,000 |
+| Seattle, LA, Boston, DC | 0.95 | $152,000 |
+| Austin, Denver, Portland, Chicago | 0.88 | $140,800 |
+| Salt Lake City, Utah | 0.85 | $136,000 |
+| Remote | 0.90 | $144,000 |
+| Unknown / other | 0.85 | $136,000 |
+
+This prevents good roles in lower-COL areas from being rejected by a salary floor calibrated to SF.
+
+## MCP tools
+
+### Setup
+| Tool | Description |
+|---|---|
+| `run_setup` | Probe seed list + optional extras to discover companies with active boards |
+| `get_company_info` | Company metadata: name, description, departments, locations, open role count |
+| `save_preferences` | Write structured preference profile (title/description keywords, exclusions, locations, salary, companies) |
+| `setup_polling` | Returns OS-specific instructions for scheduling the poller via cron/Task Scheduler |
+
+### Query
+| Tool | Description |
+|---|---|
+| `get_matches` | Top-scoring jobs above threshold. Filters: company, location, days, limit |
+| `list_company_jobs` | All open positions at one company, sorted by score |
+| `get_job_details` | Full job description, salary, score breakdown, apply link |
+| `get_resume_context` | Job + company context bundle for resume customization |
+| `search_jobs` | Full-text keyword search across all cached jobs |
+| `check_job_status` | HTTP HEAD to verify a posting URL is still live |
+
+## ATS sources
+
+| Platform | API |
+|---|---|
+| Greenhouse | `boards-api.greenhouse.io/v1/boards/{slug}` |
+| Lever | `api.lever.co/v0/postings/{slug}` |
+| Ashby | `api.ashbyhq.com/posting-api` |
+
+## Project structure
+
+```
+src/
+├── index.ts              # MCP server entry point (stdio transport)
+├── poll.ts               # Background poller (standalone, run by OS scheduler)
+├── types.ts              # TypeScript interfaces
+├── scoring/
+│   └── scorer.ts         # Deterministic scoring engine with COL adjustment
+├── sources/
+│   ├── registry.ts       # ATS source dispatch + platform bonuses
+│   ├── greenhouse.ts     # Greenhouse adapter
+│   ├── lever.ts          # Lever adapter
+│   └── ashby.ts          # Ashby adapter
+├── db/
+│   ├── schema.ts         # SQLite schema (sql.js, in-memory + file persist)
+│   ├── cache.ts          # Upsert, query, mark-dead operations
+│   └── search.ts         # LIKE-based full-text search
+├── tools/                # One file per MCP tool registration
+│   ├── run-setup.ts
+│   ├── save-preferences.ts
+│   ├── setup-polling.ts
+│   ├── get-matches.ts
+│   ├── list-company-jobs.ts
+│   ├── get-job-details.ts
+│   ├── get-resume-context.ts
+│   ├── search-jobs.ts
+│   ├── check-job-status.ts
+│   └── get-company-info.ts
+└── utils/
+    ├── preferences.ts    # Load/save preferences.json
+    ├── salary-parser.ts  # Regex salary extraction from descriptions
+    └── html-to-text.ts   # HTML → plain text for scoring
+```
+
+## Quick start
 
 ```bash
 npm install
 npm run build
+
+# Run the MCP server (stdio)
+npm start
+
+# Poll manually
+npm run poll
 ```
 
-### Setup
+### MCP client config
+
+```json
+{
+  "mcpServers": {
+    "job-search": {
+      "command": "node",
+      "args": ["build/index.js"],
+      "cwd": "/path/to/job-search-mcp"
+    }
+  }
+}
+```
+
+### Setup flow
 
 In Claude Code, ask: *"Set me up for job searching"*
 
 This triggers `run_setup` → company discovery → preference interview → `save_preferences` → `setup_polling`.
 
-### Manual Poll
+## Tech stack
 
-```bash
-node build/poll.js
-```
-
-### Query
-
-Ask Claude: *"Any new job matches?"* or *"Show me platform engineer roles"*
-
-## Supported ATS Platforms
-
-- **Greenhouse** — `boards-api.greenhouse.io` (public JSON API)
-- **Lever** — `api.lever.co` (public postings API)
-- **Ashby** — `api.ashbyhq.com` (public posting API)
-
-## Tech
-
-TypeScript · Node.js · MCP SDK · SQLite (sql.js) · Zod
+- TypeScript + Node.js
+- [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk) for MCP server
+- [sql.js](https://github.com/sql-js/sql.js) (SQLite in WASM, no native deps)
+- [Zod](https://github.com/colinhacks/zod) for input validation
 
 ## License
 
